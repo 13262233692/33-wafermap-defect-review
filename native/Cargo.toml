@@ -10,6 +10,7 @@ crate-type = ["cdylib", "lib"]
 napi = { version = "2", features = ["napi9", "serde-json", "async"] }
 napi-derive = "2"
 memmap2 = "0.9"
+rstar = "0.12"
 
 [build-dependencies]
 napi-build = "2"

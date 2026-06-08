@@ -1,6 +1,6 @@
 import React, { useRef, useEffect, useCallback, useState } from 'react';
 import { WaferMapRenderer } from '../renderer/WaferMapRenderer';
-import type { WaferInfo, PackedDefectBuffer, DefectHoverInfo, DefectRecord, DieRecord } from '../types';
+import type { WaferInfo, PackedDefectBuffer, DefectHoverInfo, DefectRecord, DieRecord, ClusterInfo } from '../types';
 import './WaferMap.css';
 
 interface WaferMapProps {
@@ -10,6 +10,8 @@ interface WaferMapProps {
   onDefectHover: (defect: DefectHoverInfo | null) => void;
   defects?: DefectRecord[];
   dies?: DieRecord[];
+  clusters?: ClusterInfo[];
+  showClusters?: boolean;
 }
 
 const WaferMap: React.FC<WaferMapProps> = ({
@@ -19,6 +21,8 @@ const WaferMap: React.FC<WaferMapProps> = ({
   onDefectHover,
   defects,
   dies,
+  clusters,
+  showClusters,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -65,6 +69,16 @@ const WaferMap: React.FC<WaferMapProps> = ({
       defectData.count
     );
   }, [defectData]);
+
+  useEffect(() => {
+    if (!rendererRef.current || !clusters) return;
+    rendererRef.current.setClusterData(clusters);
+  }, [clusters]);
+
+  useEffect(() => {
+    if (!rendererRef.current || showClusters === undefined) return;
+    rendererRef.current.setShowClusters(showClusters);
+  }, [showClusters]);
 
   const handleWheel = useCallback((e: React.WheelEvent) => {
     e.preventDefault();

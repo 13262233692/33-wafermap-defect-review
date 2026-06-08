@@ -60,3 +60,25 @@ export interface PackedDieBuffer {
   defectStarts: Uint32Array;
   count: number;
 }
+
+export interface ClusterBBox {
+  minX: number;
+  minY: number;
+  maxX: number;
+  maxY: number;
+}
+
+export interface ClusterInfo {
+  clusterId: number;
+  pointCount: number;
+  bbox: ClusterBBox;
+  isScratch: boolean;
+  linearity: number;
+  angleDeg: number;
+}
+
+export interface ClusterResult {
+  defectClusterIds: Int32Array;
+  clusters: ClusterInfo[];
+  scratchCount: number;
+}

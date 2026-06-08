@@ -6,6 +6,8 @@ import type {
   PackedDefectBuffer,
   PackedDieBuffer,
   DefectHoverInfo,
+  ClusterResult,
+  ClusterInfo,
 } from '../types';
 
 let nativeModule: any = null;
@@ -37,6 +39,8 @@ export function useKlarfData() {
   const [loading, setLoading] = useState(false);
   const [progress, setProgress] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const [clusterResult, setClusterResult] = useState<ClusterResult | null>(null);
+  const [clustering, setClustering] = useState(false);
   const abortRef = useRef(false);
 
   const loadKlarfFile = useCallback(async (filePath: string) => {
@@ -164,6 +168,47 @@ export function useKlarfData() {
     setDies(demo.dies);
   };
 
+  const runClustering = useCallback(async (eps?: number, minPoints?: number) => {
+    if (!defectData || !nativeModule) return;
+    setClustering(true);
+    try {
+      const positionsF64 = new Float64Array(defectData.count * 2);
+      for (let i = 0; i < defectData.count; i++) {
+        positionsF64[i * 2] = defectData.positions[i * 2];
+        positionsF64[i * 2 + 1] = defectData.positions[i * 2 + 1];
+      }
+
+      const epsVal = eps ?? (waferInfo ? waferInfo.diePitchX * 0.8 : 5.0);
+      const minPts = minPoints ?? 5;
+
+      const result = nativeModule.runSpatialClustering(positionsF64, epsVal, minPts);
+
+      const clusters: ClusterInfo[] = result.clusters.map((c: any) => ({
+        clusterId: c.clusterId,
+        pointCount: c.pointCount,
+        bbox: {
+          minX: c.bbox.minX,
+          minY: c.bbox.minY,
+          maxX: c.bbox.maxX,
+          maxY: c.bbox.maxY,
+        },
+        isScratch: c.isScratch,
+        linearity: c.linearity,
+        angleDeg: c.angleDeg,
+      }));
+
+      setClusterResult({
+        defectClusterIds: result.defectClusterIds,
+        clusters,
+        scratchCount: result.scratchCount,
+      });
+    } catch (err: any) {
+      console.error('Clustering failed:', err);
+    } finally {
+      setClustering(false);
+    }
+  }, [defectData, waferInfo]);
+
   return {
     defectData,
     dieData,
@@ -174,8 +219,11 @@ export function useKlarfData() {
     loading,
     progress,
     error,
+    clusterResult,
+    clustering,
     loadKlarfFile,
     setHoveredDefect,
+    runClustering,
   };
 }
 
@@ -242,6 +290,32 @@ function generateDemoData() {
         defectStartIndex: startIdx,
       });
     }
+  }
+
+  const scratchAngle = Math.random() * Math.PI;
+  const scratchCx = (Math.random() - 0.5) * radius * 0.6;
+  const scratchCy = (Math.random() - 0.5) * radius * 0.6;
+  const scratchLen = radius * (0.6 + Math.random() * 0.5);
+  const scratchCount = 60 + Math.floor(Math.random() * 80);
+
+  for (let i = 0; i < scratchCount; i++) {
+    const t = (i / scratchCount - 0.5) * scratchLen;
+    const nx = scratchCx + t * Math.cos(scratchAngle) + (Math.random() - 0.5) * 1.5;
+    const ny = scratchCy + t * Math.sin(scratchAngle) + (Math.random() - 0.5) * 1.5;
+    if (nx * nx + ny * ny > r2) continue;
+
+    defectList.push({
+      defectId: globalDefectIdx,
+      xRel: nx,
+      yRel: ny,
+      xIndex: 0,
+      yIndex: 0,
+      dieIndex: 0,
+      defectClass: 9,
+      bin: 0,
+      area: Math.random() * 10 + 1,
+    });
+    globalDefectIdx++;
   }
 
   waferInfo.totalDies = dieList.length;

@@ -1,4 +1,4 @@
-import type { PackedDefectBuffer, PackedDieBuffer, WaferInfo, DefectHoverInfo, DefectRecord, DieRecord } from '../types';
+import type { PackedDefectBuffer, PackedDieBuffer, WaferInfo, DefectHoverInfo, DefectRecord, DieRecord, ClusterInfo, ClusterResult } from '../types';
 
 const DEFECT_VERTEX_SHADER = `
   precision highp float;
@@ -126,6 +126,79 @@ const GRID_FRAGMENT_SHADER = `
   }
 `;
 
+const CLUSTER_BBOX_VERTEX_SHADER = `
+  precision highp float;
+  attribute vec2 a_position;
+
+  uniform vec2 u_resolution;
+  uniform vec2 u_pan;
+  uniform float u_zoom;
+
+  void main() {
+    vec2 screenPos = (a_position + u_pan) * u_zoom;
+    vec2 clipPos = (screenPos / u_resolution) * 2.0 - 1.0;
+    clipPos.y = -clipPos.y;
+    gl_Position = vec4(clipPos, 0.0, 1.0);
+  }
+`;
+
+const CLUSTER_BBOX_FRAGMENT_SHADER = `
+  precision highp float;
+  uniform vec4 u_color;
+  void main() {
+    gl_FragColor = u_color;
+  }
+`;
+
+const CLUSTER_MASK_VERTEX_SHADER = `
+  precision highp float;
+  attribute vec2 a_position;
+  attribute vec2 a_bboxMin;
+  attribute vec2 a_bboxMax;
+  attribute float a_isScratch;
+
+  uniform vec2 u_resolution;
+  uniform vec2 u_pan;
+  uniform float u_zoom;
+
+  varying vec2 v_localPos;
+  varying float v_isScratch;
+
+  void main() {
+    vec2 worldPos = mix(a_bboxMin, a_bboxMax, a_position);
+    vec2 screenPos = (worldPos + u_pan) * u_zoom;
+    vec2 clipPos = (screenPos / u_resolution) * 2.0 - 1.0;
+    clipPos.y = -clipPos.y;
+    gl_Position = vec4(clipPos, 0.0, 1.0);
+    v_localPos = a_position;
+    v_isScratch = a_isScratch;
+  }
+`;
+
+const CLUSTER_MASK_FRAGMENT_SHADER = `
+  precision highp float;
+  varying vec2 v_localPos;
+  varying float v_isScratch;
+
+  uniform float u_borderWidth;
+  uniform vec4 u_scratchColor;
+  uniform vec4 u_borderColor;
+
+  void main() {
+    float b = u_borderWidth;
+    float isBorder = step(v_localPos.x, b) + step(1.0 - b, v_localPos.x)
+                   + step(v_localPos.y, b) + step(1.0 - b, v_localPos.y);
+
+    if (isBorder > 0.5) {
+      gl_FragColor = u_borderColor;
+    } else if (v_isScratch > 0.5) {
+      gl_FragColor = u_scratchColor;
+    } else {
+      discard;
+    }
+  }
+`;
+
 const CLASS_COLORS: number[][] = [
   [1.0, 0.2, 0.2],
   [0.2, 1.0, 0.2],
@@ -154,6 +227,8 @@ export class WaferMapRenderer {
   private defectProgram: WebGLProgram | null = null;
   private outlineProgram: WebGLProgram | null = null;
   private gridProgram: WebGLProgram | null = null;
+  private clusterBboxProgram: WebGLProgram | null = null;
+  private clusterMaskProgram: WebGLProgram | null = null;
 
   private defectVao: {
     positionBuffer: WebGLBuffer;
@@ -188,6 +263,18 @@ export class WaferMapRenderer {
   private animationFrameId: number = 0;
   private needsRender: boolean = true;
 
+  private clusterBboxBuffer: WebGLBuffer | null = null;
+  private clusterBboxVertCount: number = 0;
+  private clusterMaskVao: {
+    positionBuffer: WebGLBuffer;
+    bboxMinBuffer: WebGLBuffer;
+    bboxMaxBuffer: WebGLBuffer;
+    isScratchBuffer: WebGLBuffer;
+    count: number;
+  } | null = null;
+  private clusters: ClusterInfo[] = [];
+  private showClusters: boolean = false;
+
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
     const gl = canvas.getContext('webgl', {
@@ -215,6 +302,8 @@ export class WaferMapRenderer {
     this.defectProgram = this.createProgram(DEFECT_VERTEX_SHADER, DEFECT_FRAGMENT_SHADER);
     this.outlineProgram = this.createProgram(WAFER_OUTLINE_VERTEX_SHADER, WAFER_OUTLINE_FRAGMENT_SHADER);
     this.gridProgram = this.createProgram(GRID_VERTEX_SHADER, GRID_FRAGMENT_SHADER);
+    this.clusterBboxProgram = this.createProgram(CLUSTER_BBOX_VERTEX_SHADER, CLUSTER_BBOX_FRAGMENT_SHADER);
+    this.clusterMaskProgram = this.createProgram(CLUSTER_MASK_VERTEX_SHADER, CLUSTER_MASK_FRAGMENT_SHADER);
   }
 
   private initClassColorTexture(): void {
@@ -404,6 +493,89 @@ export class WaferMapRenderer {
     }
   }
 
+  setClusterData(clusters: ClusterInfo[]): void {
+    this.clusters = clusters;
+    this.uploadClusterBuffers();
+    this.needsRender = true;
+  }
+
+  setShowClusters(show: boolean): void {
+    if (this.showClusters !== show) {
+      this.showClusters = show;
+      this.needsRender = true;
+    }
+  }
+
+  private uploadClusterBuffers(): void {
+    const gl = this.gl;
+
+    if (this.clusterBboxBuffer) {
+      gl.deleteBuffer(this.clusterBboxBuffer);
+      this.clusterBboxBuffer = null;
+    }
+    if (this.clusterMaskVao) {
+      gl.deleteBuffer(this.clusterMaskVao.positionBuffer);
+      gl.deleteBuffer(this.clusterMaskVao.bboxMinBuffer);
+      gl.deleteBuffer(this.clusterMaskVao.bboxMaxBuffer);
+      gl.deleteBuffer(this.clusterMaskVao.isScratchBuffer);
+      this.clusterMaskVao = null;
+    }
+
+    if (this.clusters.length === 0) return;
+
+    const pad = 2.0;
+    const bboxVerts: number[] = [];
+    for (const c of this.clusters) {
+      const x0 = c.bbox.minX - pad;
+      const y0 = c.bbox.minY - pad;
+      const x1 = c.bbox.maxX + pad;
+      const y1 = c.bbox.maxY + pad;
+      bboxVerts.push(x0, y0, x1, y0, x1, y1, x0, y1, x0, y0);
+    }
+    this.clusterBboxVertCount = bboxVerts.length / 2;
+    this.clusterBboxBuffer = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.clusterBboxBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(bboxVerts), gl.STATIC_DRAW);
+
+    const quadVerts = new Float32Array([0, 0, 1, 0, 1, 1, 0, 1]);
+    const bboxMinData = new Float32Array(this.clusters.length * 2);
+    const bboxMaxData = new Float32Array(this.clusters.length * 2);
+    const isScratchData = new Float32Array(this.clusters.length);
+
+    for (let i = 0; i < this.clusters.length; i++) {
+      const c = this.clusters[i];
+      bboxMinData[i * 2] = c.bbox.minX - pad;
+      bboxMinData[i * 2 + 1] = c.bbox.minY - pad;
+      bboxMaxData[i * 2] = c.bbox.maxX + pad;
+      bboxMaxData[i * 2 + 1] = c.bbox.maxY + pad;
+      isScratchData[i] = c.isScratch ? 1.0 : 0.0;
+    }
+
+    const positionBuffer = gl.createBuffer()!;
+    gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, quadVerts, gl.STATIC_DRAW);
+
+    const bboxMinBuffer = gl.createBuffer()!;
+    gl.bindBuffer(gl.ARRAY_BUFFER, bboxMinBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, bboxMinData, gl.STATIC_DRAW);
+
+    const bboxMaxBuffer = gl.createBuffer()!;
+    gl.bindBuffer(gl.ARRAY_BUFFER, bboxMaxBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, bboxMaxData, gl.STATIC_DRAW);
+
+    const isScratchBuffer = gl.createBuffer()!;
+    gl.bindBuffer(gl.ARRAY_BUFFER, isScratchBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, isScratchData, gl.STATIC_DRAW);
+
+    this.clusterMaskVao = {
+      positionBuffer,
+      bboxMinBuffer,
+      bboxMaxBuffer,
+      isScratchBuffer,
+      count: this.clusters.length,
+    };
+  }
+
   resize(width: number, height: number): void {
     const dpr = window.devicePixelRatio || 1;
     this.canvas.width = width * dpr;
@@ -495,6 +667,9 @@ export class WaferMapRenderer {
     this.renderGrid();
     this.renderWaferOutline();
     this.renderDefects();
+    if (this.showClusters) {
+      this.renderClusterOverlay();
+    }
   }
 
   private renderGrid(): void {
@@ -631,6 +806,108 @@ export class WaferMapRenderer {
     gl.disableVertexAttribArray(aDieIdx);
   }
 
+  private renderClusterOverlay(): void {
+    if (this.clusters.length === 0) return;
+    const gl = this.gl;
+    const ext = this.ext;
+
+    this.renderClusterMasks(gl, ext);
+    this.renderClusterBboxes(gl);
+  }
+
+  private renderClusterMasks(gl: WebGLRenderingContext, ext: ANGLE_instanced_arrays): void {
+    if (!this.clusterMaskProgram || !this.clusterMaskVao) return;
+    const prog = this.clusterMaskProgram;
+    const vao = this.clusterMaskVao;
+
+    gl.useProgram(prog);
+
+    const aPosition = gl.getAttribLocation(prog, 'a_position');
+    const aBboxMin = gl.getAttribLocation(prog, 'a_bboxMin');
+    const aBboxMax = gl.getAttribLocation(prog, 'a_bboxMax');
+    const aIsScratch = gl.getAttribLocation(prog, 'a_isScratch');
+
+    const uRes = gl.getUniformLocation(prog, 'u_resolution');
+    const uPan = gl.getUniformLocation(prog, 'u_pan');
+    const uZoom = gl.getUniformLocation(prog, 'u_zoom');
+    const uBorderWidth = gl.getUniformLocation(prog, 'u_borderWidth');
+    const uScratchColor = gl.getUniformLocation(prog, 'u_scratchColor');
+    const uBorderColor = gl.getUniformLocation(prog, 'u_borderColor');
+
+    gl.uniform2f(uRes, this.width, this.height);
+    gl.uniform2f(uPan, this.panX, this.panY);
+    gl.uniform1f(uZoom, this.zoom);
+    gl.uniform1f(uBorderWidth, 0.03);
+    gl.uniform4f(uScratchColor, 1.0, 0.1, 0.1, 0.18);
+    gl.uniform4f(uBorderColor, 1.0, 0.3, 0.1, 0.9);
+
+    gl.bindBuffer(gl.ARRAY_BUFFER, vao.positionBuffer);
+    gl.enableVertexAttribArray(aPosition);
+    gl.vertexAttribPointer(aPosition, 2, gl.FLOAT, false, 0, 0);
+
+    gl.bindBuffer(gl.ARRAY_BUFFER, vao.bboxMinBuffer);
+    gl.enableVertexAttribArray(aBboxMin);
+    gl.vertexAttribPointer(aBboxMin, 2, gl.FLOAT, false, 0, 0);
+    ext.vertexAttribDivisorANGLE(aBboxMin, 1);
+
+    gl.bindBuffer(gl.ARRAY_BUFFER, vao.bboxMaxBuffer);
+    gl.enableVertexAttribArray(aBboxMax);
+    gl.vertexAttribPointer(aBboxMax, 2, gl.FLOAT, false, 0, 0);
+    ext.vertexAttribDivisorANGLE(aBboxMax, 1);
+
+    gl.bindBuffer(gl.ARRAY_BUFFER, vao.isScratchBuffer);
+    gl.enableVertexAttribArray(aIsScratch);
+    gl.vertexAttribPointer(aIsScratch, 1, gl.FLOAT, false, 0, 0);
+    ext.vertexAttribDivisorANGLE(aIsScratch, 1);
+
+    ext.drawArraysInstancedANGLE(gl.TRIANGLE_FAN, 0, 4, vao.count);
+
+    ext.vertexAttribDivisorANGLE(aBboxMin, 0);
+    ext.vertexAttribDivisorANGLE(aBboxMax, 0);
+    ext.vertexAttribDivisorANGLE(aIsScratch, 0);
+
+    gl.disableVertexAttribArray(aPosition);
+    gl.disableVertexAttribArray(aBboxMin);
+    gl.disableVertexAttribArray(aBboxMax);
+    gl.disableVertexAttribArray(aIsScratch);
+  }
+
+  private renderClusterBboxes(gl: WebGLRenderingContext): void {
+    if (!this.clusterBboxProgram || !this.clusterBboxBuffer || this.clusterBboxVertCount === 0) return;
+    const prog = this.clusterBboxProgram;
+
+    gl.useProgram(prog);
+
+    const aPos = gl.getAttribLocation(prog, 'a_position');
+    const uRes = gl.getUniformLocation(prog, 'u_resolution');
+    const uPan = gl.getUniformLocation(prog, 'u_pan');
+    const uZoom = gl.getUniformLocation(prog, 'u_zoom');
+    const uColor = gl.getUniformLocation(prog, 'u_color');
+
+    gl.uniform2f(uRes, this.width, this.height);
+    gl.uniform2f(uPan, this.panX, this.panY);
+    gl.uniform1f(uZoom, this.zoom);
+
+    let clusterIdx = 0;
+    for (const c of this.clusters) {
+      if (c.isScratch) {
+        gl.uniform4f(uColor, 1.0, 0.2, 0.2, 0.95);
+      } else {
+        gl.uniform4f(uColor, 0.3, 0.7, 1.0, 0.6);
+      }
+
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.clusterBboxBuffer);
+      gl.enableVertexAttribArray(aPos);
+      gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+
+      const startVert = clusterIdx * 5;
+      gl.drawArrays(gl.LINE_STRIP, startVert, 5);
+      clusterIdx++;
+    }
+
+    gl.disableVertexAttribArray(aPos);
+  }
+
   startRenderLoop(): void {
     const loop = () => {
       if (this.needsRender) {
@@ -663,10 +940,19 @@ export class WaferMapRenderer {
 
     if (this.outlineBuffer) gl.deleteBuffer(this.outlineBuffer);
     if (this.gridBuffer) gl.deleteBuffer(this.gridBuffer);
+    if (this.clusterBboxBuffer) gl.deleteBuffer(this.clusterBboxBuffer);
+    if (this.clusterMaskVao) {
+      gl.deleteBuffer(this.clusterMaskVao.positionBuffer);
+      gl.deleteBuffer(this.clusterMaskVao.bboxMinBuffer);
+      gl.deleteBuffer(this.clusterMaskVao.bboxMaxBuffer);
+      gl.deleteBuffer(this.clusterMaskVao.isScratchBuffer);
+    }
     if (this.classColorTexture) gl.deleteTexture(this.classColorTexture);
     if (this.defectProgram) gl.deleteProgram(this.defectProgram);
     if (this.outlineProgram) gl.deleteProgram(this.outlineProgram);
     if (this.gridProgram) gl.deleteProgram(this.gridProgram);
+    if (this.clusterBboxProgram) gl.deleteProgram(this.clusterBboxProgram);
+    if (this.clusterMaskProgram) gl.deleteProgram(this.clusterMaskProgram);
   }
 }
 

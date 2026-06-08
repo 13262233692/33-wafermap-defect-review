@@ -1,6 +1,7 @@
 mod klarf;
 mod parser;
 mod buffer;
+mod spatial;
 
 #[cfg(test)]
 mod parser_test;
@@ -124,5 +125,93 @@ fn build_js_result(data: crate::klarf::KlarfData) -> napi::Result<JsSharedKlarfR
     die_defect_counts: unsafe { vec_to_uint8array(die_buf.defect_counts) },
     die_defect_starts: unsafe { vec_to_uint8array(die_buf.defect_starts) },
     die_count: die_buf.count,
+  })
+}
+
+#[napi(object)]
+pub struct JsClusterBBox {
+  pub min_x: f64,
+  pub min_y: f64,
+  pub max_x: f64,
+  pub max_y: f64,
+}
+
+#[napi(object)]
+pub struct JsClusterInfo {
+  pub cluster_id: i32,
+  pub point_count: u32,
+  pub bbox: JsClusterBBox,
+  pub is_scratch: bool,
+  pub linearity: f64,
+  pub angle_deg: f64,
+}
+
+#[napi(object)]
+pub struct JsClusterResult {
+  pub defect_cluster_ids: Int32Array,
+  pub clusters: Vec<JsClusterInfo>,
+  pub scratch_count: u32,
+}
+
+#[napi]
+pub fn run_spatial_clustering(
+  defect_positions: Float64Array,
+  eps: f64,
+  min_points: u32,
+) -> napi::Result<JsClusterResult> {
+  let positions: Vec<f64> = defect_positions.to_vec();
+  let count = positions.len() / 2;
+
+  if count == 0 {
+    return Ok(JsClusterResult {
+      defect_cluster_ids: Int32Array::new(Vec::new()),
+      clusters: Vec::new(),
+      scratch_count: 0,
+    });
+  }
+
+  let defects: Vec<crate::klarf::DefectRecord> = (0..count)
+    .map(|i| crate::klarf::DefectRecord {
+      defect_id: i as u32,
+      x_rel: positions[i * 2],
+      y_rel: positions[i * 2 + 1],
+      x_index: 0,
+      y_index: 0,
+      die_index: 0,
+      defect_class: 0,
+      bin: 0,
+      area: 0.0,
+    })
+    .collect();
+
+  let result = spatial::run_dbscan(&defects, eps, min_points as usize);
+
+  let scratch_count = result.clusters.iter().filter(|c| c.is_scratch).count() as u32;
+
+  let clusters: Vec<JsClusterInfo> = result
+    .clusters
+    .into_iter()
+    .map(|c| JsClusterInfo {
+      cluster_id: c.cluster_id,
+      point_count: c.point_count as u32,
+      bbox: JsClusterBBox {
+        min_x: c.bbox.min_x,
+        min_y: c.bbox.min_y,
+        max_x: c.bbox.max_x,
+        max_y: c.bbox.max_y,
+      },
+      is_scratch: c.is_scratch,
+      linearity: c.linearity,
+      angle_deg: c.angle_deg,
+    })
+    .collect();
+
+  let cluster_id_data: Vec<i32> = result.defect_cluster_ids;
+  let cluster_ids = Int32Array::with_data_copied(&cluster_id_data);
+
+  Ok(JsClusterResult {
+    defect_cluster_ids: cluster_ids,
+    clusters,
+    scratch_count,
   })
 }

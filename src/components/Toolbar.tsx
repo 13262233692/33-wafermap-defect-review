@@ -5,9 +5,23 @@ interface ToolbarProps {
   onLoadFile: (filePath: string) => void;
   loading: boolean;
   progress: number;
+  onRunClustering?: () => void;
+  clustering?: boolean;
+  showClusters?: boolean;
+  onToggleClusters?: (show: boolean) => void;
+  scratchCount?: number;
 }
 
-const Toolbar: React.FC<ToolbarProps> = ({ onLoadFile, loading, progress }) => {
+const Toolbar: React.FC<ToolbarProps> = ({
+  onLoadFile,
+  loading,
+  progress,
+  onRunClustering,
+  clustering,
+  showClusters,
+  onToggleClusters,
+  scratchCount,
+}) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleOpenFile = () => {
@@ -52,6 +66,29 @@ const Toolbar: React.FC<ToolbarProps> = ({ onLoadFile, loading, progress }) => {
           <div className="progress-bar">
             <div className="progress-fill" style={{ width: `${progress}%` }} />
           </div>
+        )}
+        {onRunClustering && (
+          <button
+            className="toolbar-btn"
+            onClick={onRunClustering}
+            disabled={clustering || loading}
+            style={{ marginLeft: 8 }}
+          >
+            {clustering ? 'Scanning...' : 'Spatial Scan'}
+          </button>
+        )}
+        {showClusters !== undefined && onToggleClusters && (
+          <label className="toolbar-toggle" style={{ marginLeft: 8 }}>
+            <input
+              type="checkbox"
+              checked={showClusters}
+              onChange={(e) => onToggleClusters(e.target.checked)}
+            />
+            <span>Clusters</span>
+            {scratchCount !== undefined && scratchCount > 0 && (
+              <span className="scratch-badge">{scratchCount} ⚠ Scratch</span>
+            )}
+          </label>
         )}
       </div>
       <div className="toolbar-right">
