@@ -1,0 +1,7 @@
+node_modules/
+dist/
+target/
+native/target/
+*.node
+.DS_Store
+Thumbs.db

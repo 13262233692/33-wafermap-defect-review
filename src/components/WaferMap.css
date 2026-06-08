@@ -1,0 +1,17 @@
+.wafermap-container {
+  width: 100%;
+  height: 100%;
+  position: relative;
+  cursor: grab;
+  background: #0a0e17;
+}
+
+.wafermap-container:active {
+  cursor: grabbing;
+}
+
+.wafermap-canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+}

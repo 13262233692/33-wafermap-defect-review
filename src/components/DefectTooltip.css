@@ -1,0 +1,45 @@
+.defect-tooltip {
+  position: absolute;
+  bottom: 16px;
+  right: 16px;
+  background: rgba(18, 24, 41, 0.95);
+  border: 1px solid #2a4a6c;
+  border-radius: 6px;
+  padding: 12px 16px;
+  min-width: 200px;
+  pointer-events: none;
+  z-index: 50;
+  backdrop-filter: blur(8px);
+}
+
+.tooltip-header {
+  font-size: 13px;
+  font-weight: 600;
+  color: #8ab4f8;
+  margin-bottom: 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid #1e2a45;
+}
+
+.tooltip-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.tooltip-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.tooltip-label {
+  font-size: 12px;
+  color: #5a7a9a;
+}
+
+.tooltip-value {
+  font-size: 12px;
+  color: #d0daf0;
+  font-family: 'Consolas', 'Fira Code', monospace;
+}
