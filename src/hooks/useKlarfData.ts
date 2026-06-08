@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useRef } from 'react';
 import type {
   WaferInfo,
   DefectRecord,
@@ -6,15 +6,18 @@ import type {
   PackedDefectBuffer,
   PackedDieBuffer,
   DefectHoverInfo,
-  KlarfResult,
 } from '../types';
-
-const isElectron = !!(window as any).electronAPI;
 
 let nativeModule: any = null;
 
 async function loadNativeModule() {
   if (nativeModule) return nativeModule;
+  try {
+    nativeModule = require('wafermap-native');
+    return nativeModule;
+  } catch {
+    console.warn('Native module not available via require, trying dynamic import');
+  }
   try {
     nativeModule = await import('wafermap-native');
     return nativeModule;
@@ -34,30 +37,41 @@ export function useKlarfData() {
   const [loading, setLoading] = useState(false);
   const [progress, setProgress] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const abortRef = useRef(false);
 
   const loadKlarfFile = useCallback(async (filePath: string) => {
     setLoading(true);
     setProgress(0);
     setError(null);
+    abortRef.current = false;
 
     try {
-      setProgress(10);
-
       const mod = await loadNativeModule();
 
-      if (mod) {
-        setProgress(30);
-        const result = filePath
-          ? await mod.parseKlarfFile(filePath)
-          : null;
+      if (mod && filePath) {
+        setProgress(5);
 
-        if (result) {
-          setProgress(70);
-          unpackNativeResult(result);
+        if (mod.parseKlarfFileAsync) {
+          const result = await mod.parseKlarfFileAsync(filePath, (p: { phase: string; percent: number }) => {
+            if (!abortRef.current) {
+              setProgress(p.percent);
+            }
+          });
+          if (!abortRef.current) {
+            setProgress(90);
+            unpackSharedResult(result);
+            setProgress(100);
+          }
+        } else if (mod.parseKlarfFileSync) {
+          setProgress(10);
+          const result = mod.parseKlarfFileSync(filePath);
+          setProgress(90);
+          unpackSharedResult(result);
           setProgress(100);
-          setLoading(false);
-          return;
         }
+
+        setLoading(false);
+        return;
       }
 
       const demoData = generateDemoData();
@@ -65,13 +79,17 @@ export function useKlarfData() {
       applyDemoData(demoData);
       setProgress(100);
     } catch (err: any) {
-      setError(err.message || 'Failed to load KLARF file');
+      if (!abortRef.current) {
+        setError(err.message || 'Failed to load KLARF file');
+      }
     } finally {
-      setLoading(false);
+      if (!abortRef.current) {
+        setLoading(false);
+      }
     }
   }, []);
 
-  const unpackNativeResult = (result: any) => {
+  const unpackSharedResult = (result: any) => {
     const info: WaferInfo = {
       waferId: result.waferInfo.waferId,
       diePitchX: result.waferInfo.diePitchX,
@@ -86,24 +104,24 @@ export function useKlarfData() {
     };
     setWaferInfo(info);
 
-    const posBuf = result.defectPositions;
+    const positionsBuf = result.defectPositions;
     const positions = new Float32Array(
-      posBuf.buffer || posBuf,
-      posBuf.byteOffset || 0,
+      positionsBuf.buffer,
+      positionsBuf.byteOffset,
       result.defectCount * 2
     );
 
-    const classBuf = result.defectClasses;
+    const classesBuf = result.defectClasses;
     const classes = new Uint8Array(
-      classBuf.buffer || classBuf,
-      classBuf.byteOffset || 0,
+      classesBuf.buffer,
+      classesBuf.byteOffset,
       result.defectCount
     );
 
     const dieIdxBuf = result.defectDieIndices;
     const dieIndices = new Uint32Array(
-      dieIdxBuf.buffer || dieIdxBuf,
-      dieIdxBuf.byteOffset || 0,
+      dieIdxBuf.buffer,
+      dieIdxBuf.byteOffset,
       result.defectCount
     );
 
@@ -111,22 +129,22 @@ export function useKlarfData() {
 
     const diePosBuf = result.diePositions;
     const diePositions = new Float32Array(
-      diePosBuf.buffer || diePosBuf,
-      diePosBuf.byteOffset || 0,
+      diePosBuf.buffer,
+      diePosBuf.byteOffset,
       result.dieCount * 2
     );
 
     const dieCountBuf = result.dieDefectCounts;
     const dieDefectCounts = new Uint32Array(
-      dieCountBuf.buffer || dieCountBuf,
-      dieCountBuf.byteOffset || 0,
+      dieCountBuf.buffer,
+      dieCountBuf.byteOffset,
       result.dieCount
     );
 
     const dieStartBuf = result.dieDefectStarts;
     const dieDefectStarts = new Uint32Array(
-      dieStartBuf.buffer || dieStartBuf,
-      dieStartBuf.byteOffset || 0,
+      dieStartBuf.buffer,
+      dieStartBuf.byteOffset,
       result.dieCount
     );
 

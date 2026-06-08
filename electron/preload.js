@@ -1,6 +1,7 @@
-const { contextBridge, ipcRenderer } = require('electron');
+const { ipcRenderer } = require('electron');
 
-contextBridge.exposeInMainWorld('electronAPI', {
+contextBridge = null;
+
+module.exports = {
   openKlarfFile: () => ipcRenderer.invoke('open-klarf-file'),
-  parseKlarf: (filePath) => ipcRenderer.invoke('parse-klarf', filePath),
-});
+};

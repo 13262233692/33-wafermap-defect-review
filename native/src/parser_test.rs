@@ -1,6 +1,10 @@
 #[cfg(test)]
 mod tests {
-    use crate::parser::parse_klarf_bytes;
+    use crate::parser::parse_klarf_bytes_with_progress;
+
+    fn parse_klarf_bytes(data: &[u8]) -> Result<crate::klarf::KlarfData, String> {
+        parse_klarf_bytes_with_progress(data, data.len() as u64, None)
+    }
 
     #[test]
     fn test_parse_minimal_klarf() {

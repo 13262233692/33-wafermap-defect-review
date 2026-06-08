@@ -1,6 +1,6 @@
 use crate::klarf::{KlarfData, WaferInfo, DieRecord, DefectRecord};
-use std::fs;
-use std::io::Read;
+use memmap2::Mmap;
+use std::fs::File;
 use std::path::Path;
 
 #[inline]
@@ -13,25 +13,49 @@ fn get_val<'a>(vals: &'a [&str], idx: usize) -> &'a str {
   vals.get(idx).map(|v| *v).unwrap_or("").trim_end_matches(';')
 }
 
-pub fn parse_klarf(path: &str) -> Result<KlarfData, String> {
+pub struct ParseProgress {
+  pub phase: String,
+  pub percent: u32,
+}
+
+pub type ProgressCallback = Box<dyn Fn(ParseProgress) + Send>;
+
+pub fn parse_klarf_mmap(path: &str, on_progress: Option<&ProgressCallback>) -> Result<KlarfData, String> {
   let file_path = Path::new(path);
   if !file_path.exists() {
     return Err(format!("File not found: {}", path));
   }
 
-  let metadata = fs::metadata(path).map_err(|e| e.to_string())?;
-  let file_size = metadata.len() as usize;
+  let file = File::open(path).map_err(|e| format!("Cannot open file: {}", e))?;
+  let metadata = file.metadata().map_err(|e| format!("Cannot read metadata: {}", e))?;
+  let file_size = metadata.len();
 
-  let mut file = fs::File::open(path).map_err(|e| e.to_string())?;
-  let mut buffer = Vec::with_capacity(file_size);
-  file.read_to_end(&mut buffer).map_err(|e| e.to_string())?;
+  if let Some(cb) = on_progress {
+    cb(ParseProgress { phase: "mmap".into(), percent: 5 });
+  }
 
-  parse_klarf_bytes(&buffer)
+  let mmap = unsafe { Mmap::map(&file) }.map_err(|e| format!("mmap failed: {}", e))?;
+
+  if let Some(cb) = on_progress {
+    cb(ParseProgress { phase: "validate".into(), percent: 10 });
+  }
+
+  let data = parse_klarf_bytes_with_progress(&mmap, file_size, on_progress)?;
+
+  Ok(data)
 }
 
-pub fn parse_klarf_bytes(data: &[u8]) -> Result<KlarfData, String> {
+pub fn parse_klarf_bytes_with_progress(
+  data: &[u8],
+  _file_size: u64,
+  on_progress: Option<&ProgressCallback>,
+) -> Result<KlarfData, String> {
   let text = std::str::from_utf8(data)
     .map_err(|e| format!("Invalid UTF-8 in KLARF file: {}", e))?;
+
+  if let Some(cb) = on_progress {
+    cb(ParseProgress { phase: "scan".into(), percent: 15 });
+  }
 
   let mut wafer_id = String::from("UNKNOWN");
   let mut die_pitch_x: f64 = 0.0;
@@ -49,7 +73,16 @@ pub fn parse_klarf_bytes(data: &[u8]) -> Result<KlarfData, String> {
   let total_lines = lines.len();
   let mut i = 0;
 
+  let progress_interval = if total_lines > 100_000 { total_lines / 50 } else { total_lines };
+
   while i < total_lines {
+    if i % progress_interval == 0 {
+      if let Some(cb) = on_progress {
+        let pct = 15 + ((i as u64 * 70) / total_lines as u64).min(70) as u32;
+        cb(ParseProgress { phase: "parse".into(), percent: pct });
+      }
+    }
+
     let line = lines[i].trim();
 
     if line.starts_with("FileRecipe") || line.starts_with("ResultTimestamp") {
@@ -124,6 +157,10 @@ pub fn parse_klarf_bytes(data: &[u8]) -> Result<KlarfData, String> {
           }
         }
 
+        if defect_records.capacity() == 0 && count > 0 {
+          defect_records.reserve(count);
+        }
+
         for j in 0..count {
           i += 1;
           if i >= total_lines {
@@ -182,6 +219,10 @@ pub fn parse_klarf_bytes(data: &[u8]) -> Result<KlarfData, String> {
           }
         }
 
+        if die_records.capacity() == 0 && count > 0 {
+          die_records.reserve(count);
+        }
+
         let mut global_defect_offset = defect_records.len() as u32;
 
         for _j in 0..count {
@@ -230,6 +271,10 @@ pub fn parse_klarf_bytes(data: &[u8]) -> Result<KlarfData, String> {
     }
 
     i += 1;
+  }
+
+  if let Some(cb) = on_progress {
+    cb(ParseProgress { phase: "done".into(), percent: 85 });
   }
 
   let wafer_info = WaferInfo {

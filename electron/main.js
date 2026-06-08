@@ -49,16 +49,6 @@ ipcMain.handle('open-klarf-file', async () => {
   return result.filePaths[0];
 });
 
-ipcMain.handle('parse-klarf', async (_event, filePath) => {
-  try {
-    const native = require('../native/index.node');
-    const result = native.parseKlarfFile(filePath);
-    return { success: true, data: result };
-  } catch (err) {
-    return { success: false, error: err.message };
-  }
-});
-
 app.whenReady().then(createWindow);
 
 app.on('window-all-closed', () => {

@@ -12,7 +12,7 @@ declare module 'wafermap-native' {
     totalDefects: number;
   }
 
-  export interface JsKlarfResult {
+  export interface JsSharedKlarfResult {
     waferInfo: JsWaferInfo;
     defectPositions: Uint8Array;
     defectClasses: Uint8Array;
@@ -24,6 +24,10 @@ declare module 'wafermap-native' {
     dieCount: number;
   }
 
-  export function parseKlarfFile(path: string): JsKlarfResult;
-  export function parseKlarfBuffer(buffer: Uint8Array): JsKlarfResult;
+  export function parseKlarfFileSync(path: string): JsSharedKlarfResult;
+  export function parseKlarfBufferSync(buffer: Uint8Array): JsSharedKlarfResult;
+  export function parseKlarfFileAsync(
+    path: string,
+    onProgress: (progress: { phase: string; percent: number }) => void
+  ): Promise<JsSharedKlarfResult>;
 }
